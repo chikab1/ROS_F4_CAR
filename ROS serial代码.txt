@@ -1,0 +1,189 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import os
+import serial
+import rospy
+import math
+import numpy as np
+from sensor_msgs.msg import LaserScan
+from geometry_msgs.msg import PoseStamped
+from tf.transformations import euler_from_quaternion
+from dynamic_reconfigure.server import Server
+from serial_test.cfg import PWMConfigConfig as PWMConfig
+
+pwm_left = 0
+pwm_right = 0
+use_auto_pwm = True
+first_reconfigure = True
+
+# 串口配置
+PORT = '/dev/ttyUSB0'
+BAUD_RATE = 115200
+TIMEOUT = 1
+
+TRAJ_PARAMS = {
+    'linear_speed': 0.1,
+    'radius': 10.0,
+    'control_rate': 1,
+    'origin_x': 0.0,
+    'origin_y': 0.0,
+    'initial_angle': 0.0
+}
+
+actual_pose = np.zeros(3)
+target_pose = np.zeros(3)
+got_first_optitrack = False
+trajectory_start_time = 0.0
+last_update_time = 0.0
+
+# 串口授权
+try:
+    password = "dujian123"
+    os.system(f"echo {password} | sudo -S chmod 777 {PORT}")
+    print("串口授权成功")
+except:
+    print("串口授权失败")
+
+def send_data(ser, left_pwm, right_pwm):
+    try:
+        data = f"[{left_pwm},{right_pwm}]\n"
+        ser.write(data.encode('utf-8'))
+        rospy.loginfo(f"发送PWM数据: {data.strip()}")
+    except Exception as e:
+        rospy.logerr(f"发送数据出错: {str(e)}")
+
+def receive_data(ser):
+    try:
+        if ser.in_waiting > 0:
+            line = ser.readline().decode('ascii', errors='ignore').strip()
+            rospy.logdebug(f"串口接收数据: {line}")
+    except Exception as e:
+        rospy.logerr(f"串口接收错误: {str(e)}")
+
+def config_callback(config, level):
+    global pwm_left, pwm_right, use_auto_pwm, first_reconfigure
+    pwm_left = config.left_pwm
+    pwm_right = config.right_pwm
+
+    if first_reconfigure:
+        # 第一次初始化参数，不视为手动控制
+        first_reconfigure = False
+        rospy.loginfo("首次初始化PWM参数: left = %d, right = %d (保持自动模式)", pwm_left, pwm_right)
+    else:
+        use_auto_pwm = False  # 用户主动修改，切换为手动模式
+        rospy.loginfo("PWM值更新: left = %d, right = %d (切换为手动模式)", pwm_left, pwm_right)
+
+    return config
+
+
+def optitrack_callback(msg):
+    global actual_pose, got_first_optitrack, trajectory_start_time, last_update_time
+
+    actual_pose[0] = msg.pose.position.x * 1000
+    actual_pose[1] = msg.pose.position.z * 1000
+    quat = (
+        msg.pose.orientation.x,
+        msg.pose.orientation.y,
+        msg.pose.orientation.z,
+        msg.pose.orientation.w
+    )
+    euler = euler_from_quaternion(quat)
+    actual_pose[2] = euler[2]
+
+    if not got_first_optitrack:
+        got_first_optitrack = True
+        trajectory_start_time = rospy.get_time()
+        last_update_time = trajectory_start_time
+        TRAJ_PARAMS['origin_x'] = actual_pose[0]
+        TRAJ_PARAMS['origin_y'] = actual_pose[1] - TRAJ_PARAMS['radius']
+        TRAJ_PARAMS['initial_angle'] = -math.pi/2
+        rospy.loginfo(f"初始化完成，起点: {actual_pose}")
+
+def generate_circular_trajectory(t):
+    v = TRAJ_PARAMS['linear_speed']
+    R = TRAJ_PARAMS['radius']
+    omega = v / R
+    origin_x = TRAJ_PARAMS['origin_x']
+    origin_y = TRAJ_PARAMS['origin_y']
+    initial_angle = TRAJ_PARAMS['initial_angle']
+    current_angle = omega * t + initial_angle
+    target_x = origin_x + R * math.sin(current_angle)
+    target_y = origin_y + R * (1 - math.cos(current_angle))
+    target_theta = (current_angle + math.pi/2) % (2*math.pi)
+    return np.array([target_x, target_y, target_theta])
+
+def calculate_errors_and_velocities():
+    global target_pose, actual_pose
+    dx = target_pose[0] - actual_pose[0]
+    dy = target_pose[1] - actual_pose[1]
+    dtheta = math.atan2(math.sin(target_pose[2] - actual_pose[2]), math.cos(target_pose[2] - actual_pose[2]))
+    error_x = dx * math.cos(actual_pose[2]) + dy * math.sin(actual_pose[2])
+    kp_linear = 0.1
+    kp_angular = 0.5
+    v = kp_linear * error_x
+    w = kp_angular * dtheta
+    wheel_radius = 0.0375
+    wheel_base = 0.14
+    v_r = (2 * v + w * wheel_base) / (2 * wheel_radius)
+    v_l = (2 * v - w * wheel_base) / (2 * wheel_radius)
+    max_wheel_speed = 4.0
+    pwm_right = int((v_r / max_wheel_speed) * 1000)
+    pwm_left = int((v_l / max_wheel_speed) * 1000)
+    return np.array([error_x, 0, dtheta]), np.array([pwm_left, pwm_right])
+
+def control_loop(event):
+    global last_update_time, target_pose, pwm_left, pwm_right, use_auto_pwm
+
+    current_time = rospy.get_time()
+    t = current_time - trajectory_start_time
+
+    target_pose = generate_circular_trajectory(t)
+
+    if use_auto_pwm:
+        errors, velocities = calculate_errors_and_velocities()
+        pwm_left, pwm_right = velocities
+        rospy.loginfo(f"自动模式PWM: left={pwm_left}, right={pwm_right}")
+    else:
+        errors, velocities = calculate_errors_and_velocities()
+        rospy.loginfo(f"手动模式PWM: left={pwm_left}, right={pwm_right}")
+
+    send_data(ser, pwm_left, pwm_right)
+    receive_data(ser)
+
+    # 打印信息
+    rospy.loginfo(
+        "时间: %.3fs\n"
+        "实际位姿: [%.2f, %.2f, %.1f°] | 目标位姿: [%.2f, %.2f, %.1f°]\n"
+        "误差: [%.3f, %.3f, %.1f°]",
+        t,
+        actual_pose[0], actual_pose[1], actual_pose[2],
+        target_pose[0], target_pose[1], target_pose[2],
+        errors[0], errors[1], math.degrees(errors[2])
+    )
+
+    last_update_time = current_time
+
+if __name__ == '__main__':
+    rospy.init_node('ROS_Car', anonymous=True)
+    server = Server(PWMConfig, config_callback)
+    rospy.sleep(1.0)
+
+    try:
+        ser = serial.Serial(PORT, BAUD_RATE, timeout=TIMEOUT)
+        print("成功打开串口")
+    except Exception as e:
+        print(f"打开串口失败: {e}")
+        exit(1)
+
+    lidar_sub = rospy.Subscriber("/scan", LaserScan, lambda msg: None)
+    optitrack_sub = rospy.Subscriber("/vrpn_client_node/RigidBody01/pose", PoseStamped, optitrack_callback)
+
+    rospy.loginfo("等待Optitrack数据...")
+
+    timer = rospy.Timer(rospy.Duration(1.0 / TRAJ_PARAMS['control_rate']), control_loop)
+    rospy.spin()
+
+    send_data(ser, 0, 0)
+    ser.close()
+    rospy.loginfo("程序退出")
