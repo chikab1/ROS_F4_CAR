@@ -1,0 +1,4 @@
+../Core/Src/tra.c:15:6:init_circle_trajectory	1
+../Core/Src/tra.c:24:6:update_trajectory	2
+../Core/Src/tra.c:33:6:get_current_position	4
+../Core/Src/tra.c:39:6:trajectory_control_init	2

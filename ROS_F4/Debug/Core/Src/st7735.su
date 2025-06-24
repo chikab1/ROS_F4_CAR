@@ -1,0 +1,14 @@
+../Core/Src/st7735.c:32:6:ST7735_Reset	8	static
+../Core/Src/st7735.c:40:6:ST7735_WriteCommand	16	static
+../Core/Src/st7735.c:48:6:ST7735_WriteByte	16	static
+../Core/Src/st7735.c:56:6:ST7735_WriteData	16	static
+../Core/Src/st7735.c:64:6:ST7735_SetRotation	24	static
+../Core/Src/st7735.c:88:6:ST7735_Init	8	static
+../Core/Src/st7735.c:183:6:ST7735_SetAddressWindow	32	static
+../Core/Src/st7735.c:201:6:ST7735_DrawRectangle	32	static
+../Core/Src/st7735.c:219:6:ST7735_DrawChar	48	static
+../Core/Src/st7735.c:240:6:ST7735_DrawString	40	static
+../Core/Src/st7735.c:258:6:ST7735_FillScreen	24	static
+../Core/Src/st7735.c:263:6:ST7735_DrawImage	24	static
+../Core/Src/st7735.c:271:6:ST7735_DrawFloat	88	static
+../Core/Src/st7735.c:279:6:ST7735_DrawInt	72	static
